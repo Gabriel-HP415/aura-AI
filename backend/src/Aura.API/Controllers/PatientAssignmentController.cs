@@ -61,15 +61,18 @@ public class PatientAssignmentController : ControllerBase
             var checkSql = @"
                 SELECT Id FROM patient_doctor_assignments
                 WHERE UserId = @UserId AND DoctorId = @DoctorId AND COALESCE(IsDeleted, false) = false";
-
+            
             using var checkCmd = new NpgsqlCommand(checkSql, connection);
             checkCmd.Parameters.AddWithValue("UserId", dto.UserId);
             checkCmd.Parameters.AddWithValue("DoctorId", doctorId);
-
+            
             var existingId = await checkCmd.ExecuteScalarAsync();
             if (existingId != null)
             {
-                return Conflict(new { message = "Bệnh nhân đã được assign cho bác sĩ này" });
+                // Idempotent success: nếu đã assign rồi thì trả về 200 với thông tin hiện tại
+                _logger.LogInformation("Patient {UserId} already assigned to doctor {DoctorId} with Id {AssignmentId}", 
+                    dto.UserId, doctorId, existingId);
+                return Ok(new { message = "Bệnh nhân đã được assign cho bác sĩ này" });
             }
 
             // Verify user exists
@@ -80,6 +83,20 @@ public class PatientAssignmentController : ControllerBase
             if (userId == null)
             {
                 return NotFound(new { message = "Không tìm thấy bệnh nhân" });
+            }
+
+            // Xác thực ClinicId (nếu gửi lên) để tránh lỗi FK; nếu không hợp lệ thì bỏ qua
+            string? clinicIdToUse = null;
+            if (!string.IsNullOrWhiteSpace(dto.ClinicId))
+            {
+                var clinicSql = "SELECT Id FROM clinics WHERE Id = @ClinicId AND COALESCE(IsDeleted, false) = false";
+                using var clinicCmd = new NpgsqlCommand(clinicSql, connection);
+                clinicCmd.Parameters.AddWithValue("ClinicId", dto.ClinicId);
+                var clinicId = await clinicCmd.ExecuteScalarAsync();
+                if (clinicId != null)
+                {
+                    clinicIdToUse = clinicId.ToString();
+                }
             }
 
             // Create assignment
@@ -97,7 +114,7 @@ public class PatientAssignmentController : ControllerBase
             insertCmd.Parameters.AddWithValue("Id", assignmentId);
             insertCmd.Parameters.AddWithValue("UserId", dto.UserId);
             insertCmd.Parameters.AddWithValue("DoctorId", doctorId);
-            insertCmd.Parameters.AddWithValue("ClinicId", (object?)dto.ClinicId ?? DBNull.Value);
+            insertCmd.Parameters.AddWithValue("ClinicId", (object?)clinicIdToUse ?? DBNull.Value);
             insertCmd.Parameters.AddWithValue("AssignedAt", now);
             insertCmd.Parameters.AddWithValue("AssignedBy", doctorId);
             insertCmd.Parameters.AddWithValue("Notes", (object?)dto.Notes ?? DBNull.Value);

@@ -169,65 +169,12 @@ class RetinalModelService:
             return True
         
         try:
-            # ==================================================================
-            # ƯU TIÊN: Load model từ đường dẫn local (nếu được truyền vào)
-            # Điều này cho phép chạy offline, không cần Internet trong container.
-            # ==================================================================
-            if model_path:
-                try:
-                    logger.info(f"Loading OCT model from local path: {model_path}")
-                    import torch.nn as nn
-
-                    class OCTClassifier(nn.Module):
-                        def __init__(self):
-                            super().__init__()
-                            # EfficientNet-B3 backbone
-                            self.backbone = timm.create_model(
-                                "efficientnet_b3", pretrained=False, num_classes=0
-                            )
-                            # Custom classifier: 1536 -> 512 -> 4 classes
-                            self.classifier = nn.Sequential(
-                                nn.Flatten(),
-                                nn.Dropout(0.3),
-                                nn.Linear(1536, 512),
-                                nn.ReLU(),
-                                nn.Dropout(0.3),
-                                nn.Linear(512, 4),
-                            )
-
-                        def forward(self, x):
-                            features = self.backbone(x)
-                            return self.classifier(features)
-
-                    self.model = OCTClassifier()
-                    state_dict = torch.load(model_path, map_location=self.device)
-                    self.model.load_state_dict(state_dict)
-
-                    self.model = self.model.to(self.device)
-                    self.model.eval()
-
-                    self.model_loaded = True
-                    self.model_version = model_version
-                    self.use_mock = False
-
-                    logger.info("Model loaded successfully from local file.")
-                    logger.info(f"Model architecture: EfficientNet-B3, classes: {self.OCT_CLASSES}")
-                    return True
-                except Exception as e_local:
-                    logger.warning(
-                        f"Local model loading failed from path={model_path}: {str(e_local)}. "
-                        "Falling back to Hugging Face download."
-                    )
-
-            # ==================================================================
-            # Nếu không có model_path hoặc load local thất bại:
-            # Thử load từ Hugging Face (cần Internet trong container)
-            # ==================================================================
             logger.info(f"Loading model from Hugging Face: {self.HF_MODEL_ID}")
             
+            # Try multiple methods to load the model
             model_loaded_successfully = False
             
-            # Method 1: timm.create_model với HF Hub
+            # Method 1: Try loading with timm (standard way)
             try:
                 self.model = timm.create_model(
                     self.HF_MODEL_ID,
@@ -238,45 +185,50 @@ class RetinalModelService:
             except Exception as e1:
                 logger.warning(f"Method 1 (timm direct) failed: {str(e1)}")
                 
-                # Method 2: tải trực tiếp trọng số từ HF Hub và bọc bằng OCTClassifier
+                # Method 2: Create custom model matching the saved structure
                 try:
                     from huggingface_hub import hf_hub_download
                     import torch.nn as nn
                     
+                    # Download model weights
                     model_path = hf_hub_download(
                         repo_id="tomalmog/oct-retinal-classifier",
                         filename="pytorch_model.bin"
                     )
                     
+                    # Create a wrapper model matching the saved structure
                     class OCTClassifier(nn.Module):
                         def __init__(self):
                             super().__init__()
-                            self.backbone = timm.create_model(
-                                "efficientnet_b3", pretrained=False, num_classes=0
-                            )
+                            # EfficientNet-B3 backbone
+                            self.backbone = timm.create_model('efficientnet_b3', pretrained=False, num_classes=0)
+                            # Custom classifier matching the saved model
+                            # classifier.2 and classifier.5 indicate: Linear(in, hidden), ReLU, Dropout, Linear(hidden, 4)
                             self.classifier = nn.Sequential(
                                 nn.Flatten(),
                                 nn.Dropout(0.3),
-                                nn.Linear(1536, 512),
+                                nn.Linear(1536, 512),  # EfficientNet-B3 outputs 1536 features
                                 nn.ReLU(),
                                 nn.Dropout(0.3),
-                                nn.Linear(512, 4),
+                                nn.Linear(512, 4)
                             )
-
+                        
                         def forward(self, x):
                             features = self.backbone(x)
                             return self.classifier(features)
                     
                     self.model = OCTClassifier()
+                    
+                    # Load the saved weights
                     state_dict = torch.load(model_path, map_location=self.device)
                     self.model.load_state_dict(state_dict)
-
                     model_loaded_successfully = True
                     logger.info("Model loaded successfully using custom OCTClassifier wrapper")
                 except Exception as e2:
                     logger.warning(f"Method 2 (custom wrapper) failed: {str(e2)}")
             
             if model_loaded_successfully:
+                # Move to device and set to eval mode
                 self.model = self.model.to(self.device)
                 self.model.eval()
                 
@@ -290,7 +242,7 @@ class RetinalModelService:
                 
                 return True
             else:
-                raise Exception("All model loading methods (local + Hugging Face) failed")
+                raise Exception("All model loading methods failed")
             
         except Exception as e:
             logger.error(f"Error loading model: {str(e)}")
@@ -353,10 +305,10 @@ class RetinalModelService:
             return self._mock_predict(image_array)
         
         try:
-            # Preprocess một ảnh cho inference
+            # Preprocess
             input_tensor = self.preprocess_image(image_array)
             
-            # Inference (không gradient cho bước dự đoán chính)
+            # Inference
             with torch.no_grad():
                 output = self.model(input_tensor)
                 probabilities = F.softmax(output, dim=1)[0]
@@ -373,13 +325,6 @@ class RetinalModelService:
             
             # Build clinical results
             results = self._build_clinical_results(probs, predicted_class, confidence)
-
-            # Sinh heatmap dựa trên gradient (saliency map) để highlight vùng nghi ngờ
-            try:
-                heatmap = self._generate_saliency_heatmap(image_array, int(predicted_idx))
-                results["heatmap"] = heatmap
-            except Exception as e_hm:
-                logger.warning(f"Không thể sinh heatmap cho ảnh hiện tại: {str(e_hm)}")
             
             return results
             
@@ -546,48 +491,6 @@ class RetinalModelService:
         
         return systemic_risks
     
-    def _generate_saliency_heatmap(
-        self,
-        image_array: np.ndarray,
-        class_index: int,
-    ) -> np.ndarray:
-        """
-        Sinh heatmap dựa trên gradient của đầu ra theo ảnh đầu vào.
-
-        Đây là một dạng saliency map chuẩn, trực tiếp từ mô hình, giúp
-        highlight những vùng ảnh ảnh hưởng nhiều tới dự đoán hiện tại.
-        """
-        if not PYTORCH_AVAILABLE:
-            raise RuntimeError("PyTorch không khả dụng – không thể sinh heatmap.")
-        if self.use_mock:
-            raise RuntimeError("Đang ở chế độ mock – heatmap từ mô hình thực không khả dụng.")
-
-        # Chuẩn hoá ảnh đầu vào và cho phép gradient
-        tensor = self.preprocess_image(image_array)
-        tensor.requires_grad_(True)
-
-        # Forward và backprop cho lớp được chọn
-        self.model.zero_grad()
-        output = self.model(tensor)
-
-        if class_index < 0 or class_index >= output.shape[1]:
-            class_index = int(torch.argmax(output, dim=1).item())
-
-        score = output[0, class_index]
-        score.backward()
-
-        # Gradient theo ảnh đầu vào
-        grads = tensor.grad.detach()[0]  # (C, H, W)
-        grads_abs = torch.abs(grads)
-        # Lấy max theo kênh để có map 2D
-        saliency, _ = torch.max(grads_abs, dim=0)  # (H, W)
-
-        saliency_np = saliency.cpu().numpy()
-        if saliency_np.max() > 0:
-            saliency_np = saliency_np / saliency_np.max()
-
-        return saliency_np.astype(np.float32)
-    
     def _assess_overall_risk(self, conditions: Dict[str, Any], systemic_risks: Dict[str, Any] = None) -> Dict[str, Any]:
         """Assess overall patient risk including systemic health"""
         # Find highest risk condition (excluding normal)
@@ -659,88 +562,38 @@ class RetinalModelService:
         risk_assessment: Dict[str, Any],
         systemic_risks: Dict[str, Any] = None
     ) -> List[str]:
-        """Generate clinical recommendations including systemic health
-        
-        Ghi chú:
-        - Toàn bộ nội dung khuyến nghị trả về cho người dùng/bác sĩ được viết bằng tiếng Việt.
-        - Mức độ nguy cơ kỹ thuật (High/Moderate/Low/Minimal) được ánh xạ sang nhãn tiếng Việt
-          để dễ hiểu hơn, nhưng logic đánh giá không thay đổi.
-        """
+        """Generate clinical recommendations including systemic health"""
         recommendations = []
         primary = risk_assessment['primary_condition']
         risk_level = risk_assessment['risk_level']
         
-        def _risk_level_vi(level: str) -> str:
-            """Map internal risk level to Vietnamese label for display."""
-            mapping = {
-                'High': 'Cao',
-                'Medium': 'Trung bình',
-                'Moderate': 'Trung bình',
-                'Low': 'Thấp',
-                'Minimal': 'Rất thấp'
-            }
-            return mapping.get(level, level)
-        
         if primary == 'NORMAL' and risk_level in ['Minimal', 'Low']:
-            recommendations.append(
-                "✅ Không phát hiện bất thường đáng kể trên võng mạc. "
-                "Cấu trúc võng mạc nhìn chung trong giới hạn bình thường theo đánh giá của mô hình AI."
-            )
+            recommendations.append("✅ No significant retinal abnormalities detected.")
             
-            # Kiểm tra nguy cơ hệ thống ngay cả khi võng mạc bình thường
+            # Check if there are systemic risk warnings even with normal retina
             if systemic_risks:
                 for risk_key, risk_data in systemic_risks.items():
                     if risk_data['risk_level'] in ['Moderate', 'High']:
-                        level_vi = _risk_level_vi(risk_data['risk_level'])
-                        recommendations.append(
-                            f"⚠️ {risk_data['name']}: Phát hiện nguy cơ {level_vi} "
-                            "dựa trên các đặc điểm mạch máu võng mạc."
-                        )
+                        recommendations.append(f"⚠️ {risk_data['name']}: {risk_data['risk_level']} risk detected")
             
             if not any("⚠️" in r for r in recommendations):
-                recommendations.append(
-                    "Đề nghị tái khám, chụp và đánh giá lại võng mạc định kỳ sau khoảng 12 tháng "
-                    "(hoặc sớm hơn nếu xuất hiện triệu chứng bất thường về thị lực)."
-                )
+                recommendations.append("Routine follow-up recommended in 12 months.")
             return recommendations
         
-        # Khuyến nghị riêng cho từng tình trạng bệnh tại mắt
+        # Eye condition-specific recommendations
         if 'CNV' in risk_assessment['positive_conditions']:
-            recommendations.append(
-                "⚠️ Phát hiện tổn thương CNV (tân mạch hắc mạc) – Khuyến nghị gửi khám "
-                "chuyên khoa đáy mắt/nhãn khoa trong thời gian sớm nhất có thể."
-            )
-            recommendations.append(
-                "Cân nhắc đánh giá chỉ định điều trị kháng VEGF (anti‑VEGF) hoặc các phác đồ điều trị phù hợp khác "
-                "tùy theo thăm khám lâm sàng."
-            )
+            recommendations.append("⚠️ CNV detected - Urgent ophthalmology referral recommended.")
+            recommendations.append("Consider anti-VEGF therapy evaluation.")
         
         if 'DME' in risk_assessment['positive_conditions']:
-            recommendations.append(
-                "⚠️ Phát hiện phù hoàng điểm do đái tháo đường (DME) – Khuyến nghị gửi khám "
-                "bác sĩ chuyên khoa võng mạc để được đánh giá chi tiết."
-            )
-            recommendations.append(
-                "Cần tối ưu kiểm soát đường huyết (HbA1c, chế độ ăn, thuốc điều trị) và các yếu tố nguy cơ tim mạch "
-                "khác theo hướng dẫn của bác sĩ nội khoa."
-            )
-            recommendations.append(
-                "Tùy mức độ tổn thương, có thể cân nhắc điều trị laser vùng hoàng điểm hoặc tiêm nội nhãn "
-                "thuốc kháng VEGF/corticosteroid theo chỉ định chuyên khoa."
-            )
+            recommendations.append("⚠️ DME detected - Referral to retina specialist recommended.")
+            recommendations.append("Optimize diabetes management.")
+            recommendations.append("Consider macular laser or anti-VEGF treatment.")
         
         if 'DRUSEN' in risk_assessment['positive_conditions']:
-            recommendations.append(
-                "Phát hiện drusen – dấu hiệu sớm gợi ý nguy cơ thoái hóa hoàng điểm tuổi già (AMD)."
-            )
-            recommendations.append(
-                "Có thể cân nhắc sử dụng bổ sung vi chất theo khuyến cáo tương đương công thức AREDS2 "
-                "(vitamin và khoáng chất hỗ trợ võng mạc) nếu phù hợp với tình trạng toàn thân."
-            )
-            recommendations.append(
-                "Khuyến nghị theo dõi định kỳ, tái khám sau khoảng 6 tháng hoặc sớm hơn nếu thị lực giảm, "
-                "méo hình hoặc nhìn biến dạng."
-            )
+            recommendations.append("Drusen (early AMD) detected.")
+            recommendations.append("AREDS2 vitamin supplementation may be beneficial.")
+            recommendations.append("Follow-up in 6 months recommended.")
         
         # =====================================================
         # SYSTEMIC HEALTH RECOMMENDATIONS (AURA Core Feature)
@@ -750,79 +603,41 @@ class RetinalModelService:
             # Cardiovascular risk
             cv_risk = systemic_risks.get('cardiovascular', {})
             if cv_risk.get('risk_level') in ['High', 'Moderate']:
-                level_vi = _risk_level_vi(cv_risk['risk_level'])
-                recommendations.append(
-                    f"❤️ Tim mạch: Nguy cơ {level_vi} được gợi ý dựa trên các thay đổi mạch máu võng mạc."
-                )
-                recommendations.append(
-                    "   → Nên tầm soát bệnh lý tim mạch: đo huyết áp, xét nghiệm mỡ máu (cholesterol, triglycerid), "
-                    "và đánh giá các yếu tố nguy cơ khác như hút thuốc, thừa cân, ít vận động."
-                )
+                recommendations.append(f"❤️ CARDIOVASCULAR: {cv_risk['risk_level']} risk detected based on retinal vascular changes.")
+                recommendations.append("   → Consider cardiovascular health screening (blood pressure, cholesterol).")
             
             # Diabetes risk
             diabetes_risk = systemic_risks.get('diabetes', {})
             if diabetes_risk.get('risk_level') in ['High', 'Moderate']:
-                level_vi = _risk_level_vi(diabetes_risk['risk_level'])
-                recommendations.append(
-                    f"🩸 Đái tháo đường: Nguy cơ biến chứng {level_vi} được gợi ý thông qua hình ảnh võng mạc."
-                )
-                recommendations.append(
-                    "   → Cần tối ưu kiểm soát đường huyết (mục tiêu HbA1c thường < 7% nếu phù hợp), "
-                    "tuân thủ thuốc, chế độ ăn và luyện tập theo hướng dẫn bác sĩ."
-                )
-                recommendations.append(
-                    "   → Nên kiểm tra định kỳ các biến chứng khác của đái tháo đường (thận, thần kinh ngoại biên, tim mạch…)."
-                )
+                recommendations.append(f"🩸 DIABETES: {diabetes_risk['risk_level']} risk of complications detected.")
+                recommendations.append("   → Optimize glycemic control (HbA1c target < 7%).")
+                recommendations.append("   → Regular diabetic monitoring recommended.")
             
             # Hypertension risk
             hypertension_risk = systemic_risks.get('hypertension', {})
             if hypertension_risk.get('risk_level') in ['High', 'Moderate']:
-                level_vi = _risk_level_vi(hypertension_risk['risk_level'])
-                recommendations.append(
-                    f"🔺 Tăng huyết áp: Hình ảnh mạch máu võng mạc gợi ý nguy cơ {level_vi}."
-                )
-                recommendations.append(
-                    "   → Nên đo huyết áp thường xuyên và tham khảo ý kiến bác sĩ nếu huyết áp cao hoặc dao động nhiều "
-                    "để được điều chỉnh thuốc và tư vấn lối sống."
-                )
+                recommendations.append(f"🔺 HYPERTENSION: {hypertension_risk['risk_level']} risk indicated by vascular changes.")
+                recommendations.append("   → Blood pressure monitoring recommended.")
             
             # Stroke risk
             stroke_risk = systemic_risks.get('stroke', {})
             if stroke_risk.get('risk_level') in ['High', 'Moderate']:
-                level_vi = _risk_level_vi(stroke_risk['risk_level'])
-                recommendations.append(
-                    f"🧠 Đột quỵ: Nguy cơ {level_vi} về bệnh lý mạch máu não được gợi ý từ dấu hiệu trên võng mạc."
-                )
-                recommendations.append(
-                    "   → Khuyến nghị sớm tham khảo bác sĩ chuyên khoa thần kinh hoặc tim mạch để được đánh giá thêm."
-                )
-                recommendations.append(
-                    "   → Có thể cân nhắc làm siêu âm Doppler động mạch cảnh và các xét nghiệm cận lâm sàng liên quan "
-                    "nếu bác sĩ chỉ định."
-                )
-        # Khuyến nghị dựa trên mức độ nguy cơ tổng thể
-        if risk_level == 'High':
-            recommendations.append(
-                "🔴 MỨC ĐỘ ƯU TIÊN CAO: Cần được bác sĩ chuyên khoa thăm khám trực tiếp trong thời gian sớm nhất có thể."
-            )
-        elif risk_level == 'Medium':
-            recommendations.append(
-                "🟡 Khuyến nghị được bác sĩ chuyên khoa thăm khám trong vòng khoảng 2–4 tuần "
-                "để đánh giá chi tiết và xây dựng kế hoạch theo dõi/điều trị."
-            )
+                recommendations.append(f"🧠 STROKE: {stroke_risk['risk_level']} cerebrovascular risk detected.")
+                recommendations.append("   → Urgent neurological consultation advised.")
+                recommendations.append("   → Consider carotid doppler evaluation.")
         
-        # Tóm tắt khi có nguy cơ hệ thống cần theo dõi
+        # Risk-based recommendations
+        if risk_level == 'High':
+            recommendations.append("🔴 HIGH PRIORITY: Immediate specialist consultation advised.")
+        elif risk_level == 'Medium':
+            recommendations.append("🟡 Specialist consultation within 2-4 weeks advised.")
+        
+        # Summary if systemic risks detected
         if systemic_risks and risk_assessment.get('requires_systemic_followup'):
             recommendations.append("")
-            recommendations.append("📋 TÓM TẮT SỨC KHỎE TOÀN THÂN:")
-            recommendations.append(
-                "   Các dấu hiệu trên võng mạc gợi ý khả năng tồn tại nguy cơ đối với sức khỏe toàn thân "
-                "(tim mạch, chuyển hóa hoặc mạch máu não)."
-            )
-            recommendations.append(
-                "   Khuyến nghị phối hợp nhiều chuyên khoa (mắt, nội tiết, tim mạch, thần kinh…) để được đánh giá "
-                "và theo dõi toàn diện hơn."
-            )
+            recommendations.append("📋 SYSTEMIC HEALTH SUMMARY:")
+            recommendations.append("   Retinal findings indicate potential systemic health concerns.")
+            recommendations.append("   Multi-disciplinary follow-up recommended.")
         
         return recommendations
     
@@ -873,85 +688,23 @@ class RetinalModelService:
     
     def predict_batch(self, images: List[np.ndarray]) -> List[Dict[str, Any]]:
         """
-        Batch prediction cho nhiều ảnh.
+        Batch prediction for multiple images
         
-        Lưu ý:
-        - Nếu đang ở chế độ mock, sẽ gọi từng ảnh như predict() hiện tại.
-        - Nếu có PyTorch và model thật, sẽ gom ảnh thành tensor batch để tận dụng hiệu năng.
-        """
-        if not self.model_loaded:
-            raise ValueError("Model not loaded. Call load_model() first.")
-        
-        # Mock: giữ nguyên logic cũ cho đơn giản
-        if self.use_mock or not PYTORCH_AVAILABLE:
-            results: List[Dict[str, Any]] = []
-            for img in images:
-                try:
-                    results.append(self._mock_predict(img))
-                except Exception as e:
-                    logger.error(f"Error processing image in batch (mock): {str(e)}")
-                    results.append({"error": str(e)})
-            return results
-
-        # Thực sự batch bằng tensor
-        try:
-            tensors: List[torch.Tensor] = []
-            for img in images:
-                try:
-                    tensors.append(self.preprocess_image(img))
-                except Exception as e:
-                    logger.error(f"Preprocess failed for one image in batch: {str(e)}")
-                    tensors.append(None)  # sẽ đánh dấu lỗi ở kết quả
+        Args:
+            images: List of image arrays
             
-            # Nếu tất cả đều lỗi preprocess
-            if all(t is None for t in tensors):
-                return [{"error": "Không thể tiền xử lý bất kỳ ảnh nào trong batch."} for _ in images]
-
-            # Ghép các ảnh hợp lệ thành batch tensor
-            valid_indices = [i for i, t in enumerate(tensors) if t is not None]
-            if not valid_indices:
-                return [{"error": "Không thể tiền xử lý bất kỳ ảnh nào trong batch."} for _ in images]
-
-            batch_tensor = torch.cat([tensors[i] for i in valid_indices], dim=0)
-
-            with torch.no_grad():
-                output = self.model(batch_tensor)
-                probs_batch = F.softmax(output, dim=1).cpu().numpy()
-
-            results: List[Dict[str, Any]] = []
-            valid_ptr = 0
-            for idx, img in enumerate(images):
-                if tensors[idx] is None:
-                    results.append({"error": "Tiền xử lý ảnh thất bại."})
-                    continue
-
-                probs = probs_batch[valid_ptr]
-                valid_ptr += 1
-
-                predicted_idx = int(np.argmax(probs))
-                predicted_class = self.OCT_CLASSES[predicted_idx]
-                confidence = float(probs[predicted_idx])
-
-                logger.info(
-                    f"[Batch] Prediction image {idx}: {predicted_class} ({confidence:.2%})"
-                )
-
-                clinical = self._build_clinical_results(probs, predicted_class, confidence)
-                results.append(clinical)
-
-            return results
-
-        except Exception as e:
-            logger.error(f"Error in batch prediction: {str(e)}")
-            # Fallback: thử lại theo từng ảnh để không mất toàn bộ batch
-            fallback_results: List[Dict[str, Any]] = []
-            for img in images:
-                try:
-                    fallback_results.append(self.predict(img))
-                except Exception as e_img:
-                    logger.error(f"Fallback single prediction failed: {str(e_img)}")
-                    fallback_results.append({"error": str(e_img)})
-            return fallback_results
+        Returns:
+            List of prediction results
+        """
+        results = []
+        for img in images:
+            try:
+                result = self.predict(img)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing image in batch: {str(e)}")
+                results.append({'error': str(e)})
+        return results
 
 
 # Singleton instance

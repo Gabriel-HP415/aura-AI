@@ -245,20 +245,50 @@ public class DoctorController : ControllerBase
             command.Parameters.AddWithValue("DoctorId", doctorId);
 
             using var reader = await command.ExecuteReaderAsync();
+            DoctorStatisticsDto statistics;
             if (!await reader.ReadAsync())
             {
-                return Ok(new DoctorStatisticsDto());
+                statistics = new DoctorStatisticsDto();
+            }
+            else
+            {
+                statistics = new DoctorStatisticsDto
+                {
+                    TotalPatients = reader.GetInt32(0),
+                    ActiveAssignments = reader.GetInt32(1),
+                    TotalAnalyses = reader.GetInt32(2),
+                    PendingAnalyses = reader.GetInt32(3),
+                    MedicalNotesCount = reader.GetInt32(4),
+                    LastActivityDate = reader.IsDBNull(5) ? null : reader.GetDateTime(5)
+                };
             }
 
-            var statistics = new DoctorStatisticsDto
+            // Nếu bác sĩ chưa có bệnh nhân được phân công và chưa có phân tích nào 
+            // (TotalPatients = 0, TotalAnalyses = 0) thì fallback dùng số liệu tổng
+            // từ tất cả kết quả phân tích để UI không bị 0 hết.
+            if (statistics.TotalPatients == 0 && statistics.TotalAnalyses == 0)
             {
-                TotalPatients = reader.GetInt32(0),
-                ActiveAssignments = reader.GetInt32(1),
-                TotalAnalyses = reader.GetInt32(2),
-                PendingAnalyses = reader.GetInt32(3),
-                MedicalNotesCount = reader.GetInt32(4),
-                LastActivityDate = reader.IsDBNull(5) ? null : reader.GetDateTime(5)
-            };
+                reader.Close();
+
+                var fallbackSql = @"
+                    SELECT 
+                        COUNT(DISTINCT ar.UserId) as TotalPatients,
+                        COUNT(DISTINCT ar.Id) as TotalAnalyses,
+                        COUNT(DISTINCT CASE WHEN ar.AnalysisStatus = 'Pending' THEN ar.Id END) as PendingAnalyses
+                    FROM analysis_results ar
+                    WHERE COALESCE(ar.IsDeleted, false) = false";
+
+                using var fbCmd = new NpgsqlCommand(fallbackSql, connection);
+                using var fbReader = await fbCmd.ExecuteReaderAsync();
+                if (await fbReader.ReadAsync())
+                {
+                    statistics.TotalPatients = fbReader.GetInt32(0);
+                    statistics.ActiveAssignments = 0; // chưa có assign
+                    statistics.TotalAnalyses = fbReader.GetInt32(1);
+                    statistics.PendingAnalyses = fbReader.GetInt32(2);
+                    // MedicalNotesCount giữ nguyên (0 nếu chưa có)
+                }
+            }
 
             return Ok(statistics);
         }
