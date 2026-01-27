@@ -1,0 +1,679 @@
+# =============================================================================
+# AURA - Hệ thống Sàng lọc Sức khỏe Mạch máu Võng mạc
+# Docker Compose Configuration
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: aura-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aura_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aura_password_2024}
+      POSTGRES_DB: ${POSTGRES_DB:-aura_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Performance tuning
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      # Connection settings
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-100}
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-256MB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./aura_database_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - aura-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-aura_user} -d ${POSTGRES_DB:-aura_db}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # Resource limits for production
+    # Uncomment if needed:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+    #     reservations:
+    #       memory: 512M
+
+  # ===========================================================================
+  # pgAdmin - Database Management Tool
+  # ===========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: aura-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@aura.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ===========================================================================
+  # Backend - ASP.NET Core API (Monolith - Gateway API)
+  # ===========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aura-backend
+    restart: unless-stopped
+    environment:
+      # ASP.NET Core
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5000
+
+      # Database Connection
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+
+      # JWT Configuration
+      - Jwt__SecretKey=${JWT_SECRET_KEY:-AURA-Super-Secret-Key-Min-32-Characters-Long-2024!}
+      - Jwt__Issuer=AuraAPI
+      - Jwt__Audience=AuraClient
+      - Jwt__ExpirationMinutes=60
+      - Jwt__RefreshTokenExpirationDays=7
+
+      # App Configuration
+      - App__FrontendUrl=http://localhost:${FRONTEND_PORT:-3000}
+      - App__Name=AURA
+      - App__Version=1.0.0
+      - App__UseHttpsRedirection=false
+
+      # Analysis (DEV/DEMO): disable credits requirement so analysis can run without user_packages setup
+      - Analysis__RequireCredits=false
+
+      # Analysis: allow fallback to mock if AI service unavailable (set to false to force AI only)
+      # Tạm thời bật lại để test, sau đó set = false khi AI Core đã chạy ổn định
+      - Analysis__FallbackToMock=true
+      
+      # Analysis: simulated processing delay in milliseconds (to make it feel more realistic)
+      - Analysis__ProcessingDelayMs=8000
+
+      # Google OAuth
+      - OAuth__Google__ClientId=${GOOGLE_CLIENT_ID:-1004537461818-uh893ns4v68194fcqgq9e41s2bvhpc97.apps.googleusercontent.com}
+      - OAuth__Google__ClientSecret=${GOOGLE_CLIENT_SECRET:-}
+
+      # Facebook OAuth
+      - OAuth__Facebook__AppId=${FACEBOOK_APP_ID:-25814417824848385}
+      - OAuth__Facebook__AppSecret=${FACEBOOK_APP_SECRET:-}
+
+      # Cloudinary
+      - Cloudinary__CloudName=${CLOUDINARY_CLOUD_NAME:-dylia0tle}
+      - Cloudinary__ApiKey=${CLOUDINARY_API_KEY:-882855471124966}
+      - Cloudinary__ApiSecret=${CLOUDINARY_API_SECRET:-kYaflgrZrHYrOCYMb8J-JKkVgJU}
+
+      # Email Configuration
+      - Email__Provider=smtp
+      - Email__SmtpHost=smtp.gmail.com
+      - Email__SmtpPort=587
+      - Email__SmtpUsername=${SMTP_USERNAME:-}
+      - Email__SmtpPassword=${SMTP_PASSWORD:-}
+      - Email__FromEmail=noreply@aura-health.com
+      - Email__FromName=AURA Health System
+
+      # AI Core Service
+      - AICore__BaseUrl=http://aicore:8000
+      - AICore__Timeout=60000
+
+      # Microservices URLs
+      - AuthService__BaseUrl=http://auth-service:5001
+      - UserService__BaseUrl=http://user-service:5002
+      - ImageService__BaseUrl=http://image-service:5003
+      # AnalysisService__BaseUrl - Commented out to call aicore directly
+      # - AnalysisService__BaseUrl=http://analysis-service:5004
+      - NotificationService__BaseUrl=http://notification-service:5005
+      - AdminService__BaseUrl=http://admin-service:5006
+
+      # Redis Cache
+      - Redis__ConnectionString=redis:6379
+
+      # RabbitMQ
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=aura_user
+      - RabbitMQ__Password=aura_rabbitmq_2024
+      - RabbitMQ__Port=5672
+      - RabbitMQ__VirtualHost=/
+
+      # Hangfire Background Jobs
+      - Hangfire__EnableDashboard=true
+
+      # Firebase Cloud Messaging (Push Notifications) - FCM V1 API
+      # Download Service Account JSON from: Firebase Console > Project Settings > Service Accounts
+      - Firebase__ProjectId=${FIREBASE_PROJECT_ID:-aura-retinal-screening}
+      - Firebase__SenderId=${FIREBASE_SENDER_ID:-422595241352}
+      - Firebase__ServiceAccountPath=/app/firebase/service-account.json
+    volumes:
+      # Firebase Service Account (optional - for FCM push notifications)
+      - ./firebase-service-account.json:/app/firebase/service-account.json:ro
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aicore:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ===========================================================================
+  # Microservices - Auth Service
+  # ===========================================================================
+  auth-service:
+    build:
+      context: ./backend
+      dockerfile: AuthService/Dockerfile
+    container_name: aura-auth-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5001
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - Jwt__SecretKey=${JWT_SECRET_KEY:-AURA-Super-Secret-Key-Min-32-Characters-Long-2024!}
+      - Jwt__Issuer=AuraAPI
+      - Jwt__Audience=AuraClient
+      - Jwt__ExpirationMinutes=60
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "5001:5001"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Microservices - User Service
+  # ===========================================================================
+  user-service:
+    build:
+      context: ./backend
+      dockerfile: UserService/Dockerfile
+    container_name: aura-user-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5002
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "5002:5002"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Microservices - Image Service
+  # ===========================================================================
+  image-service:
+    build:
+      context: ./backend
+      dockerfile: ImageService/Dockerfile
+    container_name: aura-image-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5003
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - Cloudinary__CloudName=${CLOUDINARY_CLOUD_NAME:-dylia0tle}
+      - Cloudinary__ApiKey=${CLOUDINARY_API_KEY:-882855471124966}
+      - Cloudinary__ApiSecret=${CLOUDINARY_API_SECRET:-kYaflgrZrHYrOCYMb8J-JKkVgJU}
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "5003:5003"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Microservices - Analysis Service
+  # ===========================================================================
+  analysis-service:
+    build:
+      context: ./backend
+      dockerfile: AnalysisService/Dockerfile
+    container_name: aura-analysis-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5004
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - AICore__BaseUrl=http://aicore:8000/api
+      - AICore__Timeout=30000
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=aura_user
+      - RabbitMQ__Password=aura_rabbitmq_2024
+      - RabbitMQ__Port=5672
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "5004:5004"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aicore:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Microservices - Notification Service
+  # ===========================================================================
+  notification-service:
+    build:
+      context: ./backend
+      dockerfile: NotificationService/Dockerfile
+    container_name: aura-notification-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5005
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=aura_user
+      - RabbitMQ__Password=aura_rabbitmq_2024
+      - RabbitMQ__Port=5672
+      - Email__Provider=smtp
+      - Email__SmtpHost=smtp.gmail.com
+      - Email__SmtpPort=587
+      - Email__SmtpUsername=${SMTP_USERNAME:-}
+      - Email__SmtpPassword=${SMTP_PASSWORD:-}
+      - Email__FromEmail=noreply@aura-health.com
+    ports:
+      - "5005:5005"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Microservices - Admin Service
+  # ===========================================================================
+  admin-service:
+    build:
+      context: ./backend
+      dockerfile: AdminService/Dockerfile
+    container_name: aura-admin-service
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5006
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-aura_db};Username=${POSTGRES_USER:-aura_user};Password=${POSTGRES_PASSWORD:-aura_password_2024}
+      - Jwt__SecretKey=${JWT_SECRET_KEY:-AURA-Super-Secret-Key-Min-32-Characters-Long-2024!}
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "5006:5006"
+    networks:
+      - aura-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # AI Core - Python FastAPI Microservice
+  # ===========================================================================
+  aicore:
+    build:
+      context: ./ai-core
+      dockerfile: Dockerfile
+    container_name: aura-ai-core
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - MODEL_VERSION=${AI_MODEL_VERSION:-v1.0.0}
+      - PYTHONUNBUFFERED=1
+      # Đường dẫn trọng số mô hình đã được tải sẵn (chạy offline)
+      # Nếu bạn lưu file ở vị trí khác, hãy sửa lại MODEL_PATH và volume phía dưới cho khớp.
+      - MODEL_PATH=/app/models/oct-retinal-classifier.bin
+    volumes:
+      # Map file trọng số từ host vào container AI Core (read-only)
+      - ./ai-core/models/oct-retinal-classifier.bin:/app/models/oct-retinal-classifier.bin:ro
+    ports:
+      - "${AI_CORE_PORT:-8000}:8000"
+    networks:
+      - aura-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    # Scaling: Use command line: docker-compose up -d --scale aicore=3
+
+  # ===========================================================================
+  # Frontend - React/Vite Application
+  # ===========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # API Configuration (proxied through nginx)
+        - VITE_API_URL=/api
+
+        # Google OAuth
+        - VITE_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-1004537461818-uh893ns4v68194fcqgq9e41s2bvhpc97.apps.googleusercontent.com}
+
+        # Facebook OAuth
+        - VITE_FACEBOOK_APP_ID=${FACEBOOK_APP_ID:-25814417824848385}
+
+        # Cloudinary
+        - VITE_CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-dylia0tle}
+        - VITE_CLOUDINARY_UPLOAD_PRESET=${CLOUDINARY_UPLOAD_PRESET:-aura-avatar-upload}
+
+        # App Configuration
+        - VITE_APP_NAME=AURA
+        - VITE_APP_VERSION=1.0.0
+    container_name: aura-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - aura-network
+    depends_on:
+      backend:
+        condition: service_healthy
+      kong:
+        condition: service_started
+
+  # ===========================================================================
+  # Infrastructure - Redis Cache
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: aura-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - aura-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # Infrastructure - RabbitMQ Message Queue
+  # ===========================================================================
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: aura-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-aura_user}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-aura_rabbitmq_2024}
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - aura-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # Infrastructure - KONG API Gateway
+  # ===========================================================================
+  kong-database:
+    image: postgres:16-alpine
+    container_name: aura-kong-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: ${KONG_DB_PASSWORD:-kong_password_2024}
+      POSTGRES_DB: kong
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+    networks:
+      - aura-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-migrations:
+    image: kong:3.4
+    container_name: aura-kong-migrations
+    restart: "no"
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:-kong_password_2024}
+      KONG_PG_DATABASE: kong
+    command: kong migrations bootstrap
+    networks:
+      - aura-network
+    depends_on:
+      kong-database:
+        condition: service_healthy
+
+  kong:
+    image: kong:3.4
+    container_name: aura-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:-kong_password_2024}
+      KONG_PG_DATABASE: kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_URL: http://localhost:${KONG_ADMIN_PORT:-8002}
+    ports:
+      - "${KONG_PROXY_PORT:-8003}:8000"
+      - "${KONG_ADMIN_PORT:-8002}:8001"
+    networks:
+      - aura-network
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # Infrastructure - Prometheus Monitoring
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: aura-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - aura-network
+
+  # ===========================================================================
+  # Infrastructure - Grafana Monitoring Dashboard
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: aura-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    networks:
+      - aura-network
+    depends_on:
+      - prometheus
+
+  # ===========================================================================
+  # Infrastructure - Apache NiFi (Data Flow Management)
+  # ===========================================================================
+  nifi:
+    image: apache/nifi:latest
+    container_name: aura-nifi
+    restart: unless-stopped
+    environment:
+      # NiFi 2.x runs on HTTPS by default
+      - SINGLE_USER_CREDENTIALS_USERNAME=${NIFI_USER:-admin}
+      - SINGLE_USER_CREDENTIALS_PASSWORD=${NIFI_PASSWORD:-aura_nifi_2024}
+    ports:
+      # NiFi uses HTTPS on port 8443 internally
+      - "${NIFI_PORT:-8443}:8443"
+    volumes:
+      - nifi_data:/opt/nifi/nifi-current/conf
+      - nifi_content:/opt/nifi/nifi-current/content_repository
+      - nifi_database:/opt/nifi/nifi-current/database_repository
+      - nifi_flowfile:/opt/nifi/nifi-current/flowfile_repository
+      - nifi_provenance:/opt/nifi/nifi-current/provenance_repository
+      - nifi_state:/opt/nifi/nifi-current/state
+      - nifi_logs:/opt/nifi/nifi-current/logs
+    networks:
+      - aura-network
+    healthcheck:
+      # NiFi binds to container hostname, check if process is running
+      test: ["CMD-SHELL", "pgrep -f 'nifi' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  aura-network:
+    driver: bridge
+    name: aura-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    name: aura-postgres-data
+  pgadmin_data:
+    name: aura-pgadmin-data
+  redis_data:
+    name: aura-redis-data
+  rabbitmq_data:
+    name: aura-rabbitmq-data
+  kong_data:
+    name: aura-kong-data
+  prometheus_data:
+    name: aura-prometheus-data
+  grafana_data:
+    name: aura-grafana-data
+  nifi_data:
+    name: aura-nifi-data
+  nifi_content:
+    name: aura-nifi-content
+  nifi_database:
+    name: aura-nifi-database
+  nifi_flowfile:
+    name: aura-nifi-flowfile
+  nifi_provenance:
+    name: aura-nifi-provenance
+  nifi_state:
+    name: aura-nifi-state
+  nifi_logs:
+    name: aura-nifi-logs

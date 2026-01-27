@@ -1,0 +1,331 @@
+namespace Aura.API.Admin;
+
+public record AdminLoginRequest(string Email, string Password);
+
+public record AdminLoginResponse(
+    string AccessToken,
+    int ExpiresInMinutes,
+    AdminProfileDto Admin
+);
+
+public record AdminProfileDto(
+    string Id,
+    string Email,
+    string? FirstName,
+    string? LastName,
+    bool IsSuperAdmin,
+    bool IsActive
+);
+
+public record AdminUserRowDto(
+    string Id,
+    string Email,
+    string? Username,
+    string? FirstName,
+    string? LastName,
+    bool IsEmailVerified,
+    bool IsActive
+);
+
+public record AdminDoctorRowDto(
+    string Id,
+    string Email,
+    string? Username,
+    string? FirstName,
+    string? LastName,
+    string LicenseNumber,
+    bool IsVerified,
+    bool IsActive
+);
+
+public record AdminClinicRowDto(
+    string Id,
+    string ClinicName,
+    string Email,
+    string? Phone,
+    string Address,
+    string VerificationStatus,
+    bool IsActive
+);
+
+public class AdminUpdateUserDto
+{
+    public string? Username { get; set; }
+    public string? FirstName { get; set; }
+    public string? LastName { get; set; }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? Gender { get; set; }
+    public DateTime? Dob { get; set; }
+    public bool? IsEmailVerified { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+public class AdminUpdateDoctorDto
+{
+    public string? Username { get; set; }
+    public string? FirstName { get; set; }
+    public string? LastName { get; set; }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? Gender { get; set; }
+    public string? LicenseNumber { get; set; }
+    public string? Specialization { get; set; }
+    public int? YearsOfExperience { get; set; }
+    public bool? IsVerified { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+public class AdminCreateClinicDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string ClinicName { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string? Phone { get; set; }
+    public string Address { get; set; } = string.Empty;
+    public string? City { get; set; }
+    public string? Province { get; set; }
+    public string? Country { get; set; }
+    public string? WebsiteUrl { get; set; }
+    public string? ContactPersonName { get; set; }
+    public string? ContactPersonPhone { get; set; }
+    public string? ClinicType { get; set; }
+    public string? VerificationStatus { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+public class AdminUpdateClinicDto
+{
+    public string? ClinicName { get; set; }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? Address { get; set; }
+    public string? City { get; set; }
+    public string? Province { get; set; }
+    public string? WebsiteUrl { get; set; }
+    public string? ContactPersonName { get; set; }
+    public string? ContactPersonPhone { get; set; }
+    public string? ClinicType { get; set; }
+    public string? VerificationStatus { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+// =====================================================
+// AI Configuration DTOs (FR-33)
+// =====================================================
+
+public record AIConfigurationRowDto(
+    string Id,
+    string ConfigurationName,
+    string ConfigurationType,
+    string? ModelVersionId,
+    string ParameterKey,
+    string ParameterValue,
+    string? ParameterDataType,
+    string? Description,
+    bool IsActive,
+    DateTime? AppliedAt,
+    string? AppliedBy,
+    DateTime? CreatedDate,
+    string? CreatedBy
+);
+
+public class CreateAIConfigurationDto
+{
+    public string ConfigurationName { get; set; } = string.Empty;
+    public string ConfigurationType { get; set; } = string.Empty; // Threshold, Parameter, Policy, Retraining
+    public string? ModelVersionId { get; set; }
+    public string ParameterKey { get; set; } = string.Empty;
+    public string ParameterValue { get; set; } = string.Empty;
+    public string? ParameterDataType { get; set; } // Number, String, Boolean, JSON
+    public string? Description { get; set; }
+    public bool IsActive { get; set; } = true;
+    public string? Note { get; set; }
+}
+
+public class UpdateAIConfigurationDto
+{
+    public string? ConfigurationName { get; set; }
+    public string? ConfigurationType { get; set; }
+    public string? ModelVersionId { get; set; }
+    public string? ParameterKey { get; set; }
+    public string? ParameterValue { get; set; }
+    public string? ParameterDataType { get; set; }
+    public string? Description { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+// =====================================================
+// Service Package DTOs (FR-34)
+// =====================================================
+
+public record ServicePackageRowDto(
+    string Id,
+    string PackageName,
+    string PackageType,
+    string? Description,
+    int NumberOfAnalyses,
+    decimal Price,
+    string Currency,
+    int? ValidityDays,
+    bool IsActive,
+    DateTime? CreatedDate,
+    string? CreatedBy
+);
+
+public class CreateServicePackageDto
+{
+    public string PackageName { get; set; } = string.Empty;
+    public string PackageType { get; set; } = "Individual"; // Individual, Clinic, Enterprise
+    public string? Description { get; set; }
+    public int NumberOfAnalyses { get; set; }
+    public decimal Price { get; set; }
+    public string Currency { get; set; } = "VND";
+    public int? ValidityDays { get; set; }
+    public bool IsActive { get; set; } = true;
+    public string? Note { get; set; }
+}
+
+public class UpdateServicePackageDto
+{
+    public string? PackageName { get; set; }
+    public string? PackageType { get; set; }
+    public string? Description { get; set; }
+    public int? NumberOfAnalyses { get; set; }
+    public decimal? Price { get; set; }
+    public string? Currency { get; set; }
+    public int? ValidityDays { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Note { get; set; }
+}
+
+// =====================================================
+// Audit Log DTOs (FR-37)
+// =====================================================
+
+public record AuditLogRowDto(
+    string Id,
+    string? UserId,
+    string? DoctorId,
+    string? AdminId,
+    string ActionType,
+    string ResourceType,
+    string? ResourceId,
+    string? OldValues,
+    string? NewValues,
+    string? IpAddress,
+    string? UserAgent,
+    DateTime? CreatedDate,
+    string? CreatedBy
+);
+
+public class AuditLogFilterDto
+{
+    public string? UserId { get; set; }
+    public string? DoctorId { get; set; }
+    public string? AdminId { get; set; }
+    public string? ActionType { get; set; }
+    public string? ResourceType { get; set; }
+    public string? ResourceId { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? IpAddress { get; set; }
+}
+
+// =====================================================
+// Compliance DTOs (FR-37)
+// =====================================================
+
+public record ComplianceReportDto(
+    int TotalAuditLogs,
+    int LogsLast30Days,
+    int LogsLast7Days,
+    int UniqueUsers,
+    int UniqueAdmins,
+    Dictionary<string, int> ActionTypeCounts,
+    Dictionary<string, int> ResourceTypeCounts,
+    List<ComplianceIssueDto> Issues
+);
+
+public record ComplianceIssueDto(
+    string IssueType,
+    string Description,
+    string Severity,
+    int Count,
+    DateTime? LastOccurrence
+);
+
+public record PrivacySettingsDto(
+    bool EnableAuditLogging,
+    int AuditLogRetentionDays,
+    bool AnonymizeOldLogs,
+    bool RequireConsentForDataSharing,
+    bool EnableGdprCompliance,
+    int DataRetentionDays,
+    bool AllowDataExport,
+    bool RequireTwoFactorForSensitiveActions
+);
+
+public class UpdatePrivacySettingsDto
+{
+    public bool? EnableAuditLogging { get; set; }
+    public int? AuditLogRetentionDays { get; set; }
+    public bool? AnonymizeOldLogs { get; set; }
+    public bool? RequireConsentForDataSharing { get; set; }
+    public bool? EnableGdprCompliance { get; set; }
+    public int? DataRetentionDays { get; set; }
+    public bool? AllowDataExport { get; set; }
+    public bool? RequireTwoFactorForSensitiveActions { get; set; }
+}
+
+// =====================================================
+// Notification Template DTOs (FR-39)
+// =====================================================
+
+public record NotificationTemplateRowDto(
+    string Id,
+    string TemplateName,
+    string TemplateType,
+    string TitleTemplate,
+    string ContentTemplate,
+    string? Variables,
+    bool IsActive,
+    string Language,
+    DateTime? CreatedDate,
+    string? CreatedBy,
+    DateTime? UpdatedDate,
+    string? UpdatedBy,
+    string? Note
+);
+
+public class CreateNotificationTemplateDto
+{
+    public string TemplateName { get; set; } = string.Empty;
+    public string TemplateType { get; set; } = "Custom"; // AnalysisComplete, HighRiskAlert, PaymentSuccess, PackageExpiring, MessageReceived, SystemAlert, Custom
+    public string TitleTemplate { get; set; } = string.Empty;
+    public string ContentTemplate { get; set; } = string.Empty;
+    public Dictionary<string, string>? Variables { get; set; }
+    public bool IsActive { get; set; } = true;
+    public string Language { get; set; } = "vi"; // vi, en
+    public string? Note { get; set; }
+}
+
+public class UpdateNotificationTemplateDto
+{
+    public string? TemplateName { get; set; }
+    public string? TemplateType { get; set; }
+    public string? TitleTemplate { get; set; }
+    public string? ContentTemplate { get; set; }
+    public Dictionary<string, string>? Variables { get; set; }
+    public bool? IsActive { get; set; }
+    public string? Language { get; set; }
+    public string? Note { get; set; }
+}
+
+
+
